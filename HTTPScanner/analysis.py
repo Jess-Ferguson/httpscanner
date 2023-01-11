@@ -58,7 +58,8 @@ def detectParking(site_name, page_contents, header):
         "buydomains.com",
         "Page cannot be displayed",
         "This site is temporarily unavailable.",
-        "Error. Page cannot be displayed."
+        "Error. Page cannot be displayed.",
+        "Website is no longer available"
     ]
 
     for signature in parking_signatures:
