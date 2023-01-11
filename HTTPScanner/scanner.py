@@ -1,13 +1,12 @@
 # httpscanner.py - Multithreaded bulk domain scanner to detect poorly configured http servers
 
-import os
-import urllib.request
-import threading
-import queue
 import logging
+import os
+import queue
+import requests
+import threading
 
-from socket import timeout
-from urllib.error import HTTPError
+from requests import Timeout, HTTPError
 
 
 class HTTPScannerException(Exception):
@@ -88,39 +87,33 @@ class HTTPScanner:
 
             logging.info("[%s] Trying site...", current_site_url)
 
-            site_category_string = f"[{current_site_url}]"
-            page = None
+            site_analysis_string = f"[{current_site_url}]"
+            session = requests.Session()
+            session.headers.update(header)
 
             for n in range(self._retries):
                 try:
-                    request = urllib.request.Request(current_site_url, headers=header)
-                    page = urllib.request.urlopen(request, timeout=self._timeout)
-                    page_contents = page.read().decode("utf-8")
-                    headers = dict(page.info())
+                    response = session.get(current_site_url, timeout=self._timeout)
                 except HTTPError as http_error:
                     logging.warning("[%s] Could not connect: %s", current_site_url, http_error.code)
-                    site_category_string += f"{self.separator}Inaccessible ({str(http_error.code)})"
-                except timeout:
+                    site_analysis_string += f"{self.separator}Inaccessible ({str(http_error.code)})"
+                except Timeout:
                     if n + 1 != self._retries:
                         logging.info("[%s] Timed out, retrying... (%d of %d)!", current_site_url, n + 1, self._retries)
                         continue
 
                     logging.warning("[%s] Final retry failed! (%d of %d)", current_site_url, n + 1, self._retries)
                 except Exception as exception:
-                    if "Temporary failure in name resolution" in str(exception):
-                        n -= 1
-                        continue
-
                     logging.warning("[%s] Could not connect: %s", current_site_url, exception)
-                    site_category_string += f"{self.separator}Inaccessible"
+                    site_analysis_string += f"{self.separator}Inaccessible"
                 else:
-                    site_category_string += f"{self.separator}Live"
+                    site_analysis_string += f"{self.separator}Live"
 
                     for func_name in self._analysis_functions:
-                        site_category_string += self.separator
+                        site_analysis_string += self.separator
 
                         try:
-                            site_category_string += self._analysis_functions[func_name](current_site_url, page_contents, headers)
+                            site_analysis_string += self._analysis_functions[func_name](current_site_url, response.text, response.headers)
                         except Exception as exception:
                             logging.error("Caught exception in analysis function \"%s\": %s", func_name, exception)
 
@@ -128,7 +121,7 @@ class HTTPScanner:
 
                 break
 
-            output_queue.put(site_category_string)
+            output_queue.put(site_analysis_string)
 
     def _file_output(self, output_queue, output_file_handle):
         while True:
@@ -206,6 +199,7 @@ class HTTPScanner:
             output_queue.put(None)
             threads[0].join()
 
-            threads = [None] * self._num_of_threads  # Clear the thread list so there are no problems on the next file
+            # Clear the thread list so there are no problems on the next file
+            threads = [None] * self._num_of_threads
 
             output_file_handle.close()
