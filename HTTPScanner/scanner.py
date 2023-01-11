@@ -76,13 +76,16 @@ class HTTPScanner:
             site_analysis_string = f"[{current_site_url}]"
             session = requests.Session()
             session.headers.update(header)
+            session.hooks = {
+                "response": lambda r, *args, **kwargs: r.raise_for_status()
+            }
 
             try:
                 for n in range(self._retries):
                     try:
                         response = session.get(current_site_url, timeout=self._timeout)
                     except HTTPError as http_error:
-                        raise AnalysisError(f"[{current_site_url}] Could not connect: {http_error.code}")
+                        raise AnalysisError(f"[{current_site_url}] Bad response ({http_error.response.status_code})")
                     except Timeout:
                         if n + 1 != self._retries:
                             logging.info(f"[{current_site_url}] Timed out, retrying... ({n + 1} of {self._retries})!")
@@ -123,7 +126,10 @@ class HTTPScanner:
 
     def scan(self):
         # TODO: Add option to randomise/specify User Agent and other headers
-        header = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0" }
+        header = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0",
+            "Connection": "close" 
+        }
         threads = []
 
         for input_file_name in self._input_file_list:
