@@ -6,31 +6,13 @@ import queue
 import requests
 import threading
 
-from requests import Timeout, HTTPError
+from requests import HTTPError, Timeout, RequestException
 
-
-class HTTPScannerException(Exception):
-    """ Base class for exceptions related to HTTPScanner internals """
-    pass
-
-
-class InvalidTimeoutError(HTTPScannerException):
-    """ Raised when the timeout value is invalid """
-    pass
-
-
-class InvalidRetriesError(HTTPScannerException):
-    """ Raised when the number of retries is invalid """
-    pass
-
-
-class InvalidNumOfThreadsError(HTTPScannerException):
-    """ Raised when the number of threads given is invalid """
-    pass
+from .exceptions import InvalidTimeoutError, InvalidRetriesError, InvalidNumOfThreadsError, AnalysisError
 
 
 class HTTPScanner:
-    def __init__(self, input_file_list, analysis_functions, timeout=5, retries=3, num_of_threads=50, separator='\t'):
+    def __init__(self, input_file_list, analysis_functions, test_functions, timeout=5, retries=3, num_of_threads=50, separator='|'):
         if timeout <= 0:
             raise InvalidTimeoutError
 
@@ -42,6 +24,7 @@ class HTTPScanner:
 
         self._input_file_list = input_file_list
         self._analysis_functions = analysis_functions
+        self._test_functions = test_functions
         self._timeout = timeout
         self._retries = retries
         self._num_of_threads = num_of_threads
@@ -71,6 +54,9 @@ class HTTPScanner:
 
     def analysis_functions(self, analysis_functions):
         self._analysis_functions = analysis_functions
+    
+    def test_functions(self, test_functions):
+        self._test_functions = test_functions
 
     def _analyse_sites(self, input_queue, output_queue, header):
         while True:
@@ -85,43 +71,43 @@ class HTTPScanner:
             if current_site_url[-1] == '\n':
                 current_site_url = current_site_url[:-1]
 
-            logging.info("[%s] Trying site...", current_site_url)
+            logging.info(f"[{current_site_url}] Trying site...")
 
             site_analysis_string = f"[{current_site_url}]"
             session = requests.Session()
             session.headers.update(header)
 
-            for n in range(self._retries):
-                try:
-                    response = session.get(current_site_url, timeout=self._timeout)
-                except HTTPError as http_error:
-                    logging.warning("[%s] Could not connect: %s", current_site_url, http_error.code)
-                    site_analysis_string += f"{self.separator}Inaccessible ({str(http_error.code)})"
-                except Timeout:
-                    if n + 1 != self._retries:
-                        logging.info("[%s] Timed out, retrying... (%d of %d)!", current_site_url, n + 1, self._retries)
-                        continue
+            try:
+                for n in range(self._retries):
+                    try:
+                        response = session.get(current_site_url, timeout=self._timeout)
+                    except HTTPError as http_error:
+                        raise AnalysisError(f"[{current_site_url}] Could not connect: {http_error.code}")
+                    except Timeout:
+                        if n + 1 != self._retries:
+                            logging.info(f"[{current_site_url}] Timed out, retrying... ({n + 1} of {self._retries})!")
+                            continue
 
-                    logging.warning("[%s] Final retry failed! (%d of %d)", current_site_url, n + 1, self._retries)
-                except Exception as exception:
-                    logging.warning("[%s] Could not connect: %s", current_site_url, exception)
-                    site_analysis_string += f"{self.separator}Inaccessible"
-                else:
-                    site_analysis_string += f"{self.separator}Live"
+                        raise AnalysisError(f"[{current_site_url}] Final retry failed! ({n + 1} of {self._retries})")
+                    except RequestException as exception:
+                        raise AnalysisError(f"[{current_site_url}] Could not connect: {exception}")
+                    else:
+                        for test_function in self._test_functions.values():
+                            test_function(current_site_url, response.text, response.headers)
 
-                    for func_name in self._analysis_functions:
-                        site_analysis_string += self.separator
+                        for func_name, analysis_function in self._analysis_functions.items():
+                            try:
+                                site_analysis_string += f"{self.separator}{analysis_function(current_site_url, response.text, response.headers)}"
+                            except Exception as exception:
+                                raise AnalysisError(f"Caught unexpected exception in analysis function \"{func_name}\": {exception}")
 
-                        try:
-                            site_analysis_string += self._analysis_functions[func_name](current_site_url, response.text, response.headers)
-                        except Exception as exception:
-                            logging.error("Caught exception in analysis function \"%s\": %s", func_name, exception)
+                        logging.info(f"[{current_site_url}] Successfully analysed site!")
 
-                    logging.info("[%s] Successfully analysed site!", current_site_url)
+                    break
 
-                break
-
-            output_queue.put(site_analysis_string)
+                output_queue.put(site_analysis_string)
+            except AnalysisError as exception:
+                logging.warning(str(exception))
 
     def _file_output(self, output_queue, output_file_handle):
         while True:
@@ -136,7 +122,8 @@ class HTTPScanner:
             output_file_handle.flush()
 
     def scan(self):
-        header = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0" }  # Add options to randomise/specify
+        # TODO: Add option to randomise/specify User Agent and other headers
+        header = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0" }
         threads = []
 
         for input_file_name in self._input_file_list:
@@ -145,13 +132,13 @@ class HTTPScanner:
             try:
                 input_file_handle = open(input_file_name, "r", encoding="ISO-8859-1")
             except IOError:
-                logging.error("Could not open input file %s, skipping!" % input_file_name)
+                logging.error(f"Could not open input file {input_file_name}, skipping!")
                 continue
 
             try:
                 output_file_handle = open(output_file_name, "w")
             except IOError:
-                logging.error("Error: Could not open output file %s, skipping!" % output_file_name)
+                logging.error(f"Error: Could not open output file {output_file_name}, skipping!")
                 input_file_handle.close()
                 continue
 

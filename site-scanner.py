@@ -1,10 +1,9 @@
 #!/usr/bin/python3
 
 import argparse
-import sys
 
 from HTTPScanner.scanner import HTTPScanner
-from HTTPScanner.analysis import builtinAnalysis
+from HTTPScanner.builtin_functions import analysis, tests
 
 
 def initialiseParser():
@@ -21,9 +20,8 @@ def initialiseParser():
 def main():
     parser = initialiseParser()
     args = parser.parse_args()
-    input_files = list(dict.fromkeys([file for file in args.files if file != sys.argv[0]]))
 
-    scanner = HTTPScanner(input_files, builtinAnalysis)
+    scanner = HTTPScanner(args.files, analysis, tests)
 
     if args.threads:
         scanner.threads(args.threads)
